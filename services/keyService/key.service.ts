@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { fromEvent, Observable } from 'rxjs';
+import { fromEvent, Observable, Subject } from 'rxjs';
 
 type Id = string | undefined;
 type Key = string | undefined;
@@ -8,13 +8,18 @@ type Delay = number | undefined;
 type BehaviorId = string | undefined;
 type Mute = boolean | undefined;
 type Behavior = () => void;
-type BehaviorMap = Map<BehaviorId, [Mute, Behavior]> | undefined;
-type Values = [Key, Block, Delay, BehaviorMap] | undefined;
 type BehaviorValues = [Mute, Behavior] | undefined;
+type BehaviorMap = Map<BehaviorId, BehaviorValues> | undefined;
+type Values = [Key, Block, Delay, BehaviorMap] | undefined;
 
 enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
 
 @Injectable({ providedIn: 'root' }) export class KeyService {
+
+    private useKeyboard: boolean;
+    private keyboardInput: string;
+    private valueUpdateSubject: Subject<string> = new Subject<string>();
+    valueUpdate$ = this.valueUpdateSubject.asObservable();
 
     private keyMap: Map<Id, Values>;
     private keyPresses$: Observable<KeyboardEvent>;
@@ -22,9 +27,13 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
 
     constructor() {
 
+        this.useKeyboard = false;
+        this.keyboardInput = '';
         this.keyMap = new Map<string, Values>();
         this.keyPresses$ = fromEvent<KeyboardEvent>(document, 'keydown');
         this.keyPresses$.subscribe((key) => {
+            if (this.useKeyboard && key.key.length === 1 && (key.key.charCodeAt(0) >= 32 && key.key.charCodeAt(0) <= 126))
+                this.valueUpdateSubject.next(this.keyboardInput += key.key);
             this.pressedKeys.add(key.key);
             this.press({key: key.key});
         });
@@ -37,23 +46,19 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
 
     //  SETTERS
 
-    //  set the key with the id or the key if it exists, else create it
-    //  if both id and key are defined, id is checked first
-    //  if behavior is defined, behaviorId must be defined
-    //  if mute is defined, behaviorId must be defined
-    //  if behaviorId is defined, behavior or mute must be defined
     setKey(option: {id?: Id, key?: Key, block?: Block, delay?: Delay, behaviorId?: BehaviorId, mute?: Mute, behavior?: Behavior}): void {
 
         const {id = undefined, key = undefined, block = undefined, delay = undefined, behaviorId = undefined, mute = undefined, behavior = undefined} = option;
         
-        if (!id && !key)
+        if (!id && !key && mute !== undefined)
+            for (const [id] of this.keyMap.entries())
+                this.setKey({id, mute});
+        else if (!id && !key)
             console.error("KeyService.setKey: id and key are undefined");
         else if (!id && key && !this.keyMap.has(this.getIdByKey(key)))
             console.error("KeyService.setKey: key doesn't exist");
         else if (behavior && !behaviorId)
             console.error("KeyService.setKey: behavior is defined but behaviorId is undefined");
-        else if (mute && !behaviorId)
-            console.error("KeyService.setKey: mute is defined but behaviorId is undefined");
         else if (behaviorId && !behavior && mute === undefined)
             console.error("KeyService.setKey: behaviorId is defined but behavior and mute are undefined");
         else {
@@ -88,9 +93,6 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
                     values![Select.mute] = mute;
         }
     }
-    //  delete the key with the id or the key if it exists, or delete only the behavior of the id or the key if specified
-    //  if both id and key are defined, id is checked first
-    //  if behaviorId is defined, delete the behavior of the id or the key if it exists
     delKey(option: {id?: Id, key?: Key, behaviorId?: BehaviorId}): void {
 
         const {id = undefined, key = undefined, behaviorId = undefined} = option;
@@ -107,7 +109,9 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
 
             if (this.keyMap.has(actualId)) {
 
-                if (behaviorId && this.getBehaviorMap({id: actualId})?.has(behaviorId))
+                if (actualId && !behaviorId)
+                    this.keyMap.delete(actualId);
+                else if (behaviorId && this.getBehaviorMap({id: actualId})?.has(behaviorId))
                     this.getBehaviorMap({id: actualId})?.delete(behaviorId);
                 else if (!this.getBehaviorMap({id: actualId})?.has(behaviorId))
                     console.error("KeyService.delKey: behaviorId doesn't exist");
@@ -119,7 +123,6 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
 
     //  GETTERS
 
-    //  return the id of the key if it exists, else return undefined
     getIdByKey(key: Key): Id {
 
         for (const [id, values] of this.keyMap.entries())
@@ -127,8 +130,6 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
                 return id;
         return undefined;
     }
-    //  return the values of the id or the key if it exists, else return undefined
-    //  if both id and key are defined, id is checked first
     getValues(option: {id?: Id, key?: Key}): Values {
 
         const {id = undefined, key = undefined} = option;
@@ -141,8 +142,6 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
             return this.keyMap.get(this.getIdByKey(key));
         return undefined;
     }
-    //  return the behaviorMap of the id or the key if it exists, else return undefined
-    //  if both id and key are defined, id is checked first
     getBehaviorMap(option: {id?: Id, key?: Key}): BehaviorMap {
     
         const {id = undefined, key = undefined} = option;
@@ -158,9 +157,10 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
 
     //  METHODS
 
-    //  return if the key is pressed
-    isKeyPressed(key: Key): boolean { return this.pressedKeys.has(key!); }
-    //  execute all behavior of the id or the key if it exists
+    isKeyPressed(key: Key): boolean {
+        return this.pressedKeys.has(key!);
+    }
+
     press(option: {id?: Id, key?: Key}): void {
 
         const {id = undefined, key = undefined} = option;
@@ -180,7 +180,7 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
 
                 if (delay && delay >= 0) {
                     actualValues![Select.block] = true;
-                    setTimeout(() => { actualValues![Select.block] = false; }, actualValues![Select.delay]!);
+                    setTimeout(() => { actualValues![Select.block] = false; }, delay);
                 }
                 for (const [behaviorId, values] of behaviorMap.entries())
                     if (!values![Select.mute])
@@ -189,6 +189,20 @@ enum Select {key, block, delay, behaviorMap, mute = 0, behavior}
                     actualValues![Select.block] = true;
             }
         }
+    }
+
+    usingKeyboard(quit: Key): void {
+
+        this.setKey({mute: true});
+        this.setKey({ id: 'quit', key: quit, behaviorId: 'quittingKeyboard', behavior: () => { this.quittingKeyboard(); } });
+        this.useKeyboard = true;
+    }
+    private quittingKeyboard(): void {
+
+        this.setKey({mute: false});
+        this.delKey({id: 'quit', behaviorId: 'quittingKeyboard'});
+        this.useKeyboard = false;
+        this.keyboardInput = '';
     }
 
     //  DEBUG TOOLS
